@@ -17,7 +17,11 @@
 #include "STM32L1xx.h"
 #include "LED.h"
 
+#include "stm32l1xx_i2c.h"
+#include "stm32l1xx_gpio.h"
+#include "stm32l1xx_rcc.h"
 
+#define  SLAVE_ADDRESS  0x0D
 
 volatile uint32_t msTicks;                      /* counts 1ms timeTicks       */
 /*----------------------------------------------------------------------------
@@ -65,7 +69,7 @@ uint32_t BTN_Get(void) {
   set HSI as SystemCoreClock (HSE is not populated on STM32L-Discovery board)
  *----------------------------------------------------------------------------*/
 void SystemCoreClockSetHSI(void) {
-  
+
   RCC->CR |= ((uint32_t)RCC_CR_HSION);                      /* Enable HSI                        */ 
   while ((RCC->CR & RCC_CR_HSIRDY) == 0);                   /* Wait for HSI Ready                */
 
@@ -77,7 +81,7 @@ void SystemCoreClockSetHSI(void) {
   PWR->CR = PWR_CR_VOS_0;                                   /* Select the Voltage Range 1 (1.8V) */
   while((PWR->CSR & PWR_CSR_VOSF) != 0);                    /* Wait for Voltage Regulator Ready  */
 
-  RCC->CFGR |= (uint32_t)RCC_CFGR_HPRE_DIV1;                /* HCLK = SYSCLK                     */
+  RCC->CFGR |= (uint32_t)RCC_CFGR_HPRE_DIV1;                /* HCLK = SYSCLK 16MHz               */
   RCC->CFGR |= (uint32_t)RCC_CFGR_PPRE2_DIV1;               /* PCLK2 = HCLK                      */
   RCC->CFGR |= (uint32_t)RCC_CFGR_PPRE1_DIV1;               /* PCLK1 = HCLK                      */
     
@@ -85,14 +89,234 @@ void SystemCoreClockSetHSI(void) {
   while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_HSI);   /* Wait for HSI used as system clock */
 }
 
+/* ----------------------------------------------------------------------------
+  I2Cx system initializarion start from here ...
+  ----------------------------------------------------------------------------*/
+
+#define Timed(x) Timeout = 0xFFFFF; while (x) \
+ { if (Timeout-- == 0) goto errReturn; } \
+ bStaus++;
+
+ErrorStatus I2C_Read(
+ I2C_TypeDef* I2Cx,
+ uint8_t *buf,
+ uint32_t nbyte,
+ uint8_t SlaveAddress)
+{
+  __IO uint32_t Timeout = 0;
+	uint8_t bStaus = 0;
+
+	if (!nbyte)
+		return SUCCESS;
+
+  // Wait for idle I2C interface
+  Timed(I2C_GetFlagStatus(I2Cx, I2C_FLAG_BUSY));
+
+	// Enable Acknowledgment, clear POS flag
+  I2C_AcknowledgeConfig(I2Cx, ENABLE);
+	I2C_NACKPositionConfig(I2Cx, I2C_NACKPosition_Current);
+
+	// Intiate Start Sequence (wait for EV5)
+  I2C_GenerateSTART(I2Cx, ENABLE);
+	Timed(!I2C_CheckEvent(I2Cx, I2C_EVENT_MASTER_MODE_SELECT));
+
+	// Send Address
+  I2C_Send7bitAddress(I2Cx, SlaveAddress, I2C_Direction_Receiver);
+
+	// EV6
+  Timed(!I2C_GetFlagStatus(I2Cx, I2C_FLAG_ADDR));
+
+  if (nbyte == 1) {
+
+		/* read 1 byte */
+		// Clear Ack bit
+    I2C_AcknowledgeConfig(I2Cx, DISABLE);
+
+		// EV6_1 -- must be atomic -- Clear ADDR, generate STOP
+    __disable_irq();
+    (void) I2Cx->SR2; I2C_GenerateSTOP(I2Cx,ENABLE);
+		__enable_irq();
+
+		// Receive data EV7
+    Timed(!I2C_GetFlagStatus(I2Cx, I2C_FLAG_RXNE));
+		*buf++ = I2C_ReceiveData(I2Cx);
+	}
+  else if (nbyte == 2) {
+
+	  /* read 2 bytes */
+    // Set POS flag
+    I2C_NACKPositionConfig(I2Cx, I2C_NACKPosition_Next);
+
+	  // EV6_1 -- must be atomic and in this order
+
+    __disable_irq();
+    (void) I2Cx->SR2; // Clear ADDR flag
+    I2C_AcknowledgeConfig(I2Cx, DISABLE); // Clear Ack bit
+		__enable_irq();
+
+		// EV7_3 -- Wait for BTF, program stop, read data twice
+
+    Timed(!I2C_GetFlagStatus(I2Cx, I2C_FLAG_BTF));
+
+		__disable_irq();
+		I2C_GenerateSTOP(I2Cx,ENABLE);
+		*buf++ = I2Cx->DR;
+		__enable_irq();
+
+    *buf++ = I2Cx->DR;
+	}
+  else {
+
+		/* read 3 or more bytes */
+		(void) I2Cx->SR2; // Clear ADDR flag
+		while (nbyte-- != 3)
+		{
+			//  EV7 -- cannot guarantee 1 transfer completion time,s
+			// wait for BTF instead of RXNE
+			Timed(!I2C_GetFlagStatus(I2Cx, I2C_FLAG_BTF));
+		  *buf++ = I2C_ReceiveData(I2Cx);
+		}
+
+		Timed(!I2C_GetFlagStatus(I2Cx, I2C_FLAG_BTF));
+
+		// EV7_2 -- Figure 1 has an error, doesn't read N-2 !
+		I2C_AcknowledgeConfig(I2Cx, DISABLE); // clear ack bit
+
+		__disable_irq();
+    *buf++ = I2C_ReceiveData(I2Cx); // receive byte N-2
+		I2C_GenerateSTOP(I2Cx,ENABLE); // program stop
+		__enable_irq();
+
+		*buf++ = I2C_ReceiveData(I2Cx); // receive byte N-1
+
+		// wait for byte N
+
+    Timed(!I2C_CheckEvent(I2Cx, I2C_EVENT_MASTER_BYTE_RECEIVED));
+		*buf++ = I2C_ReceiveData(I2Cx);
+
+		nbyte = 0;
+	}
+
+  // Wait for stop
+  Timed(I2C_GetFlagStatus(I2Cx, I2C_FLAG_STOPF));
+
+	return SUCCESS;
+
+errReturn:
+	return ERROR;
+}
+
+ErrorStatus I2C_Write(I2C_TypeDef* I2Cx,
+ const uint8_t* buf,
+ uint32_t nbyte,
+ uint8_t SlaveAddress)
+{
+  __IO uint32_t Timeout = 0;
+	uint8_t bStaus = 0;
+	uint32_t lsEvent = 0;
+
+  if (nbyte) {
+
+		  Timed(I2C_GetFlagStatus(I2Cx, I2C_FLAG_BUSY));
+
+		  // Intiate Start Sequence
+      I2C_GenerateSTART(I2Cx, ENABLE);
+
+		  Timed(!I2C_CheckEvent(I2Cx, I2C_EVENT_MASTER_MODE_SELECT));
+
+		  // Send Address EV5
+      I2C_Send7bitAddress(I2Cx, SlaveAddress, I2C_Direction_Transmitter);
+		  Timed(!I2C_CheckEvent(I2Cx, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED));
+
+		  // EV6 Write first byte EV8_1
+      I2C_SendData(I2Cx, *buf++);
+
+		  while (--nbyte) {
+        // wait on BTF
+        Timed(!I2C_GetFlagStatus(I2Cx, I2C_FLAG_BTF));
+			  I2C_SendData(I2Cx, *buf++);
+			}
+
+			Timed(!I2C_GetFlagStatus(I2Cx, I2C_FLAG_BTF));
+
+		  I2C_GenerateSTOP(I2Cx, ENABLE);
+
+			Timed(I2C_GetFlagStatus(I2C1, I2C_FLAG_STOPF));
+   }
+
+	 return SUCCESS;
+
+errReturn:
+   lsEvent = I2C_GetLastEvent(I2Cx);
+
+	 return ERROR;
+}
+
+
+
+void I2C_LowLevel_Init(I2C_TypeDef* I2Cx, int ClockSpeed, int OwnAddress)
+{
+        GPIO_InitTypeDef GPIO_InitStructure;
+        I2C_InitTypeDef I2C_InitStructure;
+
+        // Enable GPIOB clocks
+        RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
+
+        // Configure I2C clock and GPIO
+        GPIO_StructInit(&GPIO_InitStructure);
+
+				if (I2Cx == I2C1){
+					 /* I2C1 clock enable */
+           RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C1, ENABLE);
+
+					 /* I2C1 SDA and SCL configuration */
+           GPIO_InitStructure.GPIO_Pin = (GPIO_Pin_8 | GPIO_Pin_9);
+					 GPIO_InitStructure.GPIO_Speed = GPIO_Speed_40MHz;
+					 GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF;
+					 GPIO_InitStructure.GPIO_OType = GPIO_OType_OD;
+					 //GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
+					 GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+					 // Connect I2C1 pins to AF
+					 GPIO_PinAFConfig(GPIOB, GPIO_PinSource8, GPIO_AF_I2C1);  // SCL
+					 GPIO_PinAFConfig(GPIOB, GPIO_PinSource9, GPIO_AF_I2C1);  // SDA
+
+           /* I2C1 Reset */
+					 RCC_APB1PeriphResetCmd(RCC_APB1Periph_I2C1, ENABLE);
+					 RCC_APB1PeriphResetCmd(RCC_APB1Periph_I2C1, DISABLE);
+        }
+        else {
+					// I2C2 ...
+				}
+
+				Delay(10);
+				/* Configure I2Cx */
+        I2C_StructInit(&I2C_InitStructure);
+			  I2C_InitStructure.I2C_Mode = I2C_Mode_I2C;
+			  I2C_InitStructure.I2C_DutyCycle = I2C_DutyCycle_2;
+				I2C_InitStructure.I2C_OwnAddress1 = OwnAddress;
+			  I2C_InitStructure.I2C_Ack = I2C_Ack_Disable;
+			  I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
+			  I2C_InitStructure.I2C_ClockSpeed = ClockSpeed;
+
+			  I2C_Init(I2Cx, &I2C_InitStructure);
+				I2C_Cmd(I2Cx, ENABLE);
+}
+
+/*----------------------------------------------------------------------------
+  GPIO Config Start Here
+ *----------------------------------------------------------------------------*/
 
 /*----------------------------------------------------------------------------
   MAIN function
  *----------------------------------------------------------------------------*/
 int main (void) {
-  int32_t num = -1; 
-  int32_t dir =  1;
- uint32_t btns = 0;
+//  int32_t num = -1;
+//  int32_t dir =  1;
+//  uint32_t btns = 0;
+  uint8_t cmdBuf[2] = {0x80, 0x81};
+  uint8_t ptBuf[2] = {0xB0, 0x80};
+  uint8_t regBuf[1] = {0xff};
 
   SystemCoreClockSetHSI();
 
@@ -100,30 +324,34 @@ int main (void) {
   if (SysTick_Config(SystemCoreClock / 1000)) { /* SysTick 1 msec interrupts  */
     while (1);                                  /* Capture error              */
   }
-  
-  LED_Init();
-  BTN_Init();                             
- 
-  while(1) {                                    /* Loop forever               */
-    btns = BTN_Get();                           /* Read button states         */
 
-    if (btns != (1UL << 0)) {
-      /* Calculate 'num': 0,1,...,LED_NUM-1,LED_NUM-1,...,1,0,0,...  */
-      num += dir;
-      if (num == LED_NUM) { dir = -1; num =  LED_NUM-1; } 
-      else if   (num < 0) { dir =  1; num =  0;         }
+  I2C_LowLevel_Init(I2C1, 400000, 0xfb);
+  I2C_Write(I2C1, cmdBuf, 2, 0x0D << 1);
+  I2C_Write(I2C1, ptBuf, 2, 0x0D << 1);
+	I2C_Read(I2C1, regBuf, 1, 0x0D << 1);
 
-      LED_On (num);
-      Delay( 50);                               /* Delay 50ms                 */
-      LED_Off(num);
-      Delay(450);                               /* Delay 450ms                */
-    }
-    else {
-      LED_Out (0x03);
-      Delay(10);                                /* Delay 10ms                 */
-    }
+//  LED_Init();
+//  BTN_Init();
+//
+  while(1) {                                      /* Loop forever               */
+//    btns = BTN_Get();                           /* Read button states         */
+
+//    if (btns != (1UL << 0)) {
+//      /* Calculate 'num': 0,1,...,LED_NUM-1,LED_NUM-1,...,1,0,0,...  */
+//      num += dir;
+//      if (num == LED_NUM) { dir = -1; num =  LED_NUM-1; }
+//      else if   (num < 0) { dir =  1; num =  0;         }
+
+//      LED_On (num);
+//      Delay( 50);                               /* Delay 50ms                 */
+//      LED_Off(num);
+//      Delay(450);                               /* Delay 450ms                */
+//    }
+//    else {
+//      LED_Out (0x03);
+//      Delay(10);                                /* Delay 10ms                 */
+//    }
 
   }
-  
 }
 
