@@ -290,6 +290,7 @@ void I2C_LowLevel_Init(I2C_TypeDef* I2Cx, int ClockSpeed, int OwnAddress)
 				}
 
 				Delay(10);
+
 				/* Configure I2Cx */
         I2C_StructInit(&I2C_InitStructure);
 			  I2C_InitStructure.I2C_Mode = I2C_Mode_I2C;
@@ -303,9 +304,33 @@ void I2C_LowLevel_Init(I2C_TypeDef* I2Cx, int ClockSpeed, int OwnAddress)
 				I2C_Cmd(I2Cx, ENABLE);
 }
 
-/*----------------------------------------------------------------------------
-  GPIO Config Start Here
- *----------------------------------------------------------------------------*/
+//
+// Set MOC(Microcontroller Output Clock) selected SYSCLK
+//
+void OutputClockSetSysclock(void)
+{
+	/* MOC SYSCLK selected */
+  RCC->CFGR = (RCC->CFGR & ~RCC_CFGR_MCOPRE) | RCC_CFGR_MCOSEL_0;
+
+	/* Enable AHB GPIOA clock */
+  RCC_AHBPeriphClockCmd(RCC_AHBENR_GPIOAEN, ENABLE);
+
+	/* GPIOA PA8 Alternate function mode */
+	GPIOA->MODER = (GPIOA->MODER & ~GPIO_MODER_MODER8) | GPIO_MODER_MODER8_1;
+	GPIOA->AFR[1] = (GPIOA->AFR[1] & ~GPIO_AFRH_AFRH8);
+
+	/* 40 MHz High speed */
+  GPIOA->OSPEEDR &= ~(GPIO_OSPEEDER_OSPEEDR8);
+  GPIOA->OSPEEDR |= (GPIO_OSPEEDER_OSPEEDR8_0|GPIO_OSPEEDER_OSPEEDR8_1);
+}
+
+//
+// External Funcs Headfile
+//
+void ad5933_probe();
+int ad5933_ring_postdisable();
+int ad5933_ring_postenable();
+int ad5933_ring_preenable();
 
 /*----------------------------------------------------------------------------
   MAIN function
@@ -314,9 +339,9 @@ int main (void) {
 //  int32_t num = -1;
 //  int32_t dir =  1;
 //  uint32_t btns = 0;
-  uint8_t cmdBuf[2] = {0x80, 0x81};
-  uint8_t ptBuf[2] = {0xB0, 0x80};
-  uint8_t regBuf[1] = {0xff};
+//  uint8_t cmdBuf[2] = {0x80, 0x81};
+//  uint8_t ptBuf[2] = {0xB0, 0x80};
+//  uint8_t regBuf[1] = {0xff};
 
   SystemCoreClockSetHSI();
 
@@ -325,10 +350,26 @@ int main (void) {
     while (1);                                  /* Capture error              */
   }
 
+	//
+	// PA8 (Microcontroller Output Clock)
+	// output 16MHz and to be used as AD5934 MCLK
+	//
+	OutputClockSetSysclock();
+
+	//
+	// I2C1 hardware init
+	//
   I2C_LowLevel_Init(I2C1, 400000, 0xfb);
-  I2C_Write(I2C1, cmdBuf, 2, 0x0D << 1);
-  I2C_Write(I2C1, ptBuf, 2, 0x0D << 1);
-	I2C_Read(I2C1, regBuf, 1, 0x0D << 1);
+
+	//I2C_Write(I2C1, cmdBuf, 2, 0x0D << 1);
+  //I2C_Write(I2C1, ptBuf, 2, 0x0D << 1);
+	//I2C_Read(I2C1, regBuf, 1, 0x0D << 1);
+
+	//
+	// AD5934 init task
+	//
+	ad5933_probe();
+  ad5933_ring_preenable();
 
 //  LED_Init();
 //  BTN_Init();
@@ -352,6 +393,9 @@ int main (void) {
 //      Delay(10);                                /* Delay 10ms                 */
 //    }
 
+    //
+    // AD5934 main task
+    //
+    ad5933_ring_postenable();
   }
 }
-
