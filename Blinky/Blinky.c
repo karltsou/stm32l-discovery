@@ -20,8 +20,18 @@
 #include "stm32l1xx_i2c.h"
 #include "stm32l1xx_gpio.h"
 #include "stm32l1xx_rcc.h"
+#include "stm32l1xx_adc.h"
+#include "stm32l1xx_dma.h"
+#include "stm32l1xx_dac.h"
+#include "stm32l1xx_opamp.h"
 
 #define  SLAVE_ADDRESS  0x0D
+//#define  I2C_AD5934
+//#define  ADC1_OPAMP1
+
+/* Private define ------------------------------------------------------------*/
+#define ADC1_DR_ADDRESS       ((uint32_t)0x40012458)
+static __IO uint16_t ADC_ConvertedValue;
 
 volatile uint32_t msTicks;                      /* counts 1ms timeTicks       */
 /*----------------------------------------------------------------------------
@@ -325,12 +335,186 @@ void OutputClockSetSysclock(void)
 }
 
 //
+// OPAMP configuration.
+//
+void OPAMP_Config(void)
+{
+  //GPIO_InitTypeDef   GPIO_InitStructure;
+
+  /* GPIOA and GPIOB Peripheral clock enable */
+  //RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOA | RCC_AHBPeriph_GPIOB, ENABLE);
+
+  /* Configure PB0 (OPAMP2 output) in analog mode */
+  //GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
+  //GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AN;
+  //GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
+  //GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+  /* Configure PA6 (OPAMP2 positive input) in analog mode */
+  //GPIO_InitStructure.GPIO_Pin = GPIO_Pin_6;
+  //GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AN;
+  //GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
+  //GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+  /* COMP Peripheral clock enable: COMP and OPAMP share the same Peripheral clock enable */
+  RCC_APB1PeriphClockCmd(RCC_APB1Periph_COMP, ENABLE);
+
+  /* Enable OPAMP1 */
+  OPAMP_Cmd(OPAMP_Selection_OPAMP1, ENABLE);
+
+  /* Close S4 and S5 swicthes to make an internal follower */
+  OPAMP_SwitchCmd(OPAMP_OPAMP1Switch4 | OPAMP_OPAMP1Switch5, ENABLE);
+}
+
+//
+// ADC1 Configuration
+//
+void ADC_LowLeve_Init()
+{
+	GPIO_InitTypeDef GPIO_InitStructure;
+	DMA_InitTypeDef DMA_InitStructure;
+	ADC_InitTypeDef ADC_InitStructure;
+
+	// Configure ADC on ADC1_IN1, PIN PA1 PA2 & PA3
+	// These two PA1 PA2 uesd as input pins to an opamp
+  // PA3 is an output of opamp
+  GPIO_InitStructure.GPIO_Pin = (GPIO_Pin_1|GPIO_Pin_2|GPIO_Pin_3);
+  GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AIN;
+  GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
+  //GPIO_InitStructure.GPIO_Speed = GPIO_Speed_40MHz;
+  GPIO_Init(GPIOA, &GPIO_InitStructure);
+
+	/*------------------------ OPAMP configuration ------------------------------*/
+
+	OPAMP_Config();
+
+  /*------------------------ DMA1 configuration ------------------------------*/
+
+  /* Enable DMA1 clock */
+  RCC_AHBPeriphClockCmd(RCC_AHBPeriph_DMA1, ENABLE);
+
+  /* DMA1 channel1 configuration */
+  DMA_DeInit(DMA1_Channel1);
+  DMA_InitStructure.DMA_PeripheralBaseAddr = ADC1_DR_ADDRESS;
+  DMA_InitStructure.DMA_MemoryBaseAddr = (uint32_t)&ADC_ConvertedValue;
+  DMA_InitStructure.DMA_DIR = DMA_DIR_PeripheralSRC;
+  DMA_InitStructure.DMA_BufferSize = 1;
+  DMA_InitStructure.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+  DMA_InitStructure.DMA_MemoryInc = DMA_MemoryInc_Enable;
+  DMA_InitStructure.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord;
+  DMA_InitStructure.DMA_MemoryDataSize = DMA_MemoryDataSize_HalfWord;
+  DMA_InitStructure.DMA_Mode = DMA_Mode_Circular;
+  DMA_InitStructure.DMA_Priority = DMA_Priority_High;
+  DMA_InitStructure.DMA_M2M = DMA_M2M_Disable;
+  DMA_Init(DMA1_Channel1, &DMA_InitStructure);
+
+  /* Enable DMA1 channel1 */
+  DMA_Cmd(DMA1_Channel1, ENABLE);
+
+	/*----------------- ADC1 configuration with DMA enabled --------------------*/
+
+  /* Enable ADC1 clock */
+  RCC_APB2PeriphClockCmd(RCC_APB2Periph_ADC1, ENABLE);
+
+  /* ADC1 Configuration -----------------------------------------------------*/
+  ADC_InitStructure.ADC_Resolution = ADC_Resolution_12b;
+  ADC_InitStructure.ADC_ScanConvMode = ENABLE;
+  ADC_InitStructure.ADC_ContinuousConvMode = DISABLE;
+  ADC_InitStructure.ADC_ExternalTrigConvEdge = ADC_ExternalTrigConvEdge_None;
+  ADC_InitStructure.ADC_ExternalTrigConv = 0;
+  ADC_InitStructure.ADC_DataAlign = ADC_DataAlign_Right;
+  ADC_InitStructure.ADC_NbrOfConversion = 1;
+  ADC_Init(ADC1, &ADC_InitStructure);
+
+	/* Enable temperature sensor and Vref */
+  //ADC_TempSensorVrefintCmd(ENABLE);
+
+  /* ADC1 regular channel 3 configuration */
+  ADC_RegularChannelConfig(ADC1, ADC_Channel_3, 1, ADC_SampleTime_24Cycles);
+  /* ADC1 regular channel configuration */
+  //ADC_RegularChannelConfig(ADC1, UBAT_ADC_CHANNEL,       1, ADC_SampleTime_24Cycles);
+  //ADC_RegularChannelConfig(ADC1, ADC_Channel_TempSensor, 2, ADC_SampleTime_24Cycles);
+  //ADC_RegularChannelConfig(ADC1, ADC_Channel_Vrefint,    3, ADC_SampleTime_24Cycles);
+
+  /* Enable the request after last transfer for DMA Circular mode */
+  ADC_DMARequestAfterLastTransferCmd(ADC1, ENABLE);
+
+  /* Define delay between ADC1 conversions */
+  ADC_DelaySelectionConfig(ADC1, ADC_DelayLength_7Cycles);
+
+  /* Enable ADC1 Power Down during Delay */
+  ADC_PowerDownCmd(ADC1, ADC_PowerDown_Idle_Delay, ENABLE);
+
+  /* Enable ADC1 DMA */
+  ADC_DMACmd(ADC1, ENABLE);
+
+  /* Enable ADC1 */
+  ADC_Cmd(ADC1, ENABLE);
+
+  /* Wait until the ADC1 is ready */
+  while (!ADC_GetFlagStatus(ADC1, ADC_FLAG_ADONS));
+
+  /* Start ADC1 Software Conversion */
+  ADC_SoftwareStartConv(ADC1);
+}
+//
+// @brief  Power periodic task
+// @param  Period: Task execution period in milliseconds
+//
+void Power_Task(uint32_t Period)
+{
+  uint16_t tmp = 0;
+
+	Delay(Period);
+
+	/* Conversion done ? */
+  if (DMA_GetFlagStatus(DMA1_FLAG_TC1))
+  {
+    tmp = ADC_ConvertedValue;
+
+    /* Start next ADC1 Software Conversion */
+    ADC_SoftwareStartConv(ADC1);
+  }
+}
+
+//
+// DAC LowLevel Init
+//
+void DAC_LowLevel_Init()
+{
+  GPIO_InitTypeDef	GPIO_InitStructure;
+	DAC_InitTypeDef	DAC_InitStructure;
+
+	RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOA, ENABLE);
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_DAC, ENABLE);
+
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_4 | GPIO_Pin_5;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AN;
+	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_NOPULL;
+	GPIO_Init(GPIOA,&GPIO_InitStructure);
+
+	DAC_DeInit();
+	DAC_InitStructure.DAC_Trigger = DAC_Trigger_None;
+	DAC_InitStructure.DAC_WaveGeneration = DAC_WaveGeneration_None;
+	DAC_InitStructure.DAC_OutputBuffer = DAC_OutputBuffer_Enable;
+	DAC_Init(DAC_Channel_2, &DAC_InitStructure);
+	DAC_Cmd(DAC_Channel_2,ENABLE);
+
+	DAC_InitStructure.DAC_OutputBuffer = DAC_OutputBuffer_Enable;
+	DAC_Init(DAC_Channel_1, &DAC_InitStructure);
+	DAC_Cmd(DAC_Channel_1,ENABLE);
+
+	DAC_SetChannel1Data(DAC_Align_12b_R, 0x0000);
+	DAC_SetChannel2Data(DAC_Align_12b_R, 0x0000);
+}
+
+//
 // External Funcs Headfile
 //
-void ad5933_probe();
-int ad5933_ring_postdisable();
-int ad5933_ring_postenable();
-int ad5933_ring_preenable();
+void ad5933_probe(void);
+int ad5933_ring_postdisable(void);
+int ad5933_ring_postenable(void);
+int ad5933_ring_preenable(void);
 
 /*----------------------------------------------------------------------------
   MAIN function
@@ -350,6 +534,7 @@ int main (void) {
     while (1);                                  /* Capture error              */
   }
 
+#if defined (I2C_AD5934)
 	//
 	// PA8 (Microcontroller Output Clock)
 	// output 16MHz and to be used as AD5934 MCLK
@@ -370,6 +555,9 @@ int main (void) {
 	//
 	ad5933_probe();
   ad5933_ring_preenable();
+#endif
+
+  ADC_LowLeve_Init();
 
 //  LED_Init();
 //  BTN_Init();
@@ -393,9 +581,18 @@ int main (void) {
 //      Delay(10);                                /* Delay 10ms                 */
 //    }
 
+#if defined (I2C_AD5934)
     //
-    // AD5934 main task
+    // AD5934 Main Task
     //
     ad5933_ring_postenable();
+#endif
+
+#if defined (ADC1_OPAMP1)
+    //
+    // ADC1, OMAMP1 Main Task
+    //
+    Power_Task(10);
+#endif
   }
 }
