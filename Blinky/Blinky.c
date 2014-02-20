@@ -558,6 +558,7 @@ int main (void) {
 #endif
 
   ADC_LowLeve_Init();
+  DAC_LowLevel_Init();
 
 //  LED_Init();
 //  BTN_Init();
