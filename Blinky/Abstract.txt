@@ -1,0 +1,22 @@
+The Blinky project is a simple demo program for the ST 'STM32L152RB' 
+microcontroller using ST 'STM32L-Discovery' Evaluation Board.
+
+Example functionality:                                                   
+ - Clock Settings:
+   - SYSCLK  =           16.00 MHz (HSI)
+   - HCLK    = SYSCLK  = 16.00 MHz
+
+ - 2 LEDs blink with a fixed speed, determined by SysTick Timer
+     working in interrupt mode
+ - if BUtton USER is pressed both LEDs are lit.
+
+
+
+The Blinky program is available in different targets:
+
+  STM32L152 Flash:    configured for on-chip Flash
+                      (used for production or target debugging)
+
+  STM32L152 RAM:      configured for on-chip RAM
+                      (used for target debugging)
+
