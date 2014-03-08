@@ -358,7 +358,9 @@ static int ad5933_work(AD5933_STATE *st, uint8_t *buf)
 	//AD5933_STATE *st = &g_st;
 
 	//struct iio_dev *indio_dev = i2c_get_clientdata(st->client);
-	//uint8_t buf[2];
+	uint8_t *datbuf = buf;
+	uint16_t real;
+	uint16_t magnitude;
 	unsigned char status;
 
 	//st = &g_st;
@@ -386,12 +388,15 @@ static int ad5933_work(AD5933_STATE *st, uint8_t *buf)
 
 		ad5933_i2c_read(
 				AD5933_REG_REAL_DATA,
-				2, &buf[0]);
+				2, datbuf);
+
+		real = datbuf[0] << 8 | datbuf[1];
 
 		ad5933_i2c_read(
 				AD5933_REG_IMAG_DATA,
-				2, &buf[2]);
+				2, datbuf);
 
+		magnitude = datbuf[0] << 8 | datbuf[1];
 		//if (scan_count == 2) {
 		//	buf[0] = be16_to_cpu(buf[0]);
 		//	buf[1] = be16_to_cpu(buf[1]);
@@ -447,7 +452,7 @@ int ad5933_ring_preenable()
 int ad5933_ring_postenable()
 {
 	AD5933_STATE *st = &g_st;
-  uint8_t buf[4] = {0,0,0,0};	
+	uint8_t buf[4] = {0,0,0,0};
 	uint8_t status = 0;
 
 	/* AD5933_CTRL_INIT_START_FREQ:
