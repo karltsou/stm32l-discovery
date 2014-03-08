@@ -26,7 +26,7 @@
 #include "stm32l1xx_opamp.h"
 
 #define  SLAVE_ADDRESS  0x0D
-//#define  I2C_AD5934
+#define  I2C_AD5934
 //#define  ADC1_OPAMP1
 
 /* Private define ------------------------------------------------------------*/
@@ -556,10 +556,10 @@ int main (void) {
 	ad5933_probe();
   ad5933_ring_preenable();
 #endif
-
+#if defined (ADC1_OPAMP1)
   ADC_LowLeve_Init();
   DAC_LowLevel_Init();
-
+#endif
 //  LED_Init();
 //  BTN_Init();
 //
