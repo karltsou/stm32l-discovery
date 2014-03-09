@@ -463,14 +463,17 @@ void ADC_LowLeve_Init()
 //
 void Power_Task(uint32_t Period)
 {
-  uint16_t tmp = 0;
+  static uint8_t count;
+  static uint16_t adcBuf[10];
 
-	Delay(Period);
+  Delay(Period);
 
 	/* Conversion done ? */
   if (DMA_GetFlagStatus(DMA1_FLAG_TC1))
   {
-    tmp = ADC_ConvertedValue;
+    adcBuf[count++] = ADC_ConvertedValue;
+		if (count == 10)
+			count = 0;
 
     /* Start next ADC1 Software Conversion */
     ADC_SoftwareStartConv(ADC1);
@@ -593,7 +596,7 @@ int main (void) {
     //
     // ADC1, OMAMP1 Main Task
     //
-    Power_Task(10);
+    Power_Task(5);
 #endif
   }
 }
